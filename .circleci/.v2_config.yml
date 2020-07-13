@@ -1,0 +1,156 @@
+version: 2.1
+
+working_directory: &working_directory /root/project
+terraform_directory: &terraform_directory /root/project/terraform
+
+executors:
+  terraform:
+    docker:
+      - image: hashicorp/terraform:light
+    environment:
+      BASH_ENV: /root/.bashrc
+      TERRAFORM_ENV: *terraform_directory
+      PROJECT_DIRECTORY: *working_directory
+    working_directory: *working_directory
+
+repo_cache_key: &repo_cache_key v1-repo-{{ .Branch }}-{{ .Revision }}
+
+# Step to restore repository from cache
+save_repo: &save_repo
+  save_cache:
+    key: *repo_cache_key
+    paths:
+      - *working_directory
+
+restore_repo: &restore_repo
+  restore_cache:
+    key: *repo_cache_key
+
+commands:
+  tf:
+    description: "Terraform command"
+    parameters:
+      cmd:
+        type: string
+        default: validate
+      args:
+        type: string
+        default: ""
+    steps:
+      - checkout
+      - run:
+          name: terraform << parameters.cmd >>
+          no_output_timeout: 30m
+          command: |
+            cd && touch $BASH_ENV
+            cd ${TERRAFORM_ENV}
+            cat \<< EOF > /root/.terraformrc
+            credentials "app.terraform.io" {
+              token = "$TF_API_TOKEN"
+            }
+            EOF
+            mkdir -p $PROJECT_DIRECTORY/config/kube
+            terraform << parameters.cmd >> << parameters.args >>
+
+jobs:
+  init:
+    executor: terraform
+    steps:
+      - tf:
+          cmd: init
+          args: -backend-config="token=${TF_API_TOKEN}"
+      - tf
+      - *save_repo
+  plan:
+    executor: terraform
+    steps:
+      - *restore_repo
+      - tf:
+          cmd: plan
+      - *save_repo
+  apply:
+    executor: terraform
+    steps:
+      - *restore_repo
+      - tf:
+          cmd: apply
+          args: --auto-approve
+      - *save_repo
+  destroy:
+    executor: terraform
+    steps:
+      - *restore_repo
+      - tf:
+          cmd: destroy
+          args: --auto-approve
+      - *save_repo
+  setup_env:
+    executor: terraform
+    steps:
+      - *restore_repo
+      - tf:
+          cmd: output
+          args: aks_kube_config > $PROJECT_DIRECTORY/config/kube/aks_kube_config.yaml
+      - run:
+          name: Setup kubectl
+          no_output_timeout: 30m
+          command: |
+            cd ${TERRAFORM_ENV}
+            apk add curl gettext
+            curl -LO https://storage.googleapis.com/kubernetes-release/release/v1.18.0/bin/linux/amd64/kubectl
+            chmod +x ./kubectl
+            mv ./kubectl /usr/local/bin/kubectl
+            mkdir -p /root/.kube
+            KUBECONFIG=$PROJECT_DIRECTORY/config/kube/aks_kube_config.yaml
+      - run:
+          name: Setup Helm
+          no_output_timeout: 30m
+          command: |
+            cd ${TERRAFORM_ENV}
+            export FILENAME=helm-v3.2.4-linux-amd64.tar.gz
+            export HELM_URL=https://get.helm.sh/${FILENAME}
+            curl -o /tmp/$FILENAME ${HELM_URL} \
+            && tar -zxvf /tmp/${FILENAME} -C /tmp \
+            && mv /tmp/linux-amd64/helm /usr/local/bin/helm \
+            && rm -rf /tmp/*
+  deploy_monitoring:
+    executor: terraform
+    steps:
+      - *restore_repo
+      - run:
+          name: Deploy Monitoring
+          no_output_timeout: 30m
+          command: |
+            cd ${PROJECT_DIRECTORY}
+            helm repo add stable https://kubernetes-charts.storage.googleapis.com/
+
+workflows:
+  Deployment workflow:
+    jobs:
+      - init
+      - plan:
+          requires:
+            - init
+      # - hold_apply:
+      #   type: approval
+      #   requires:
+      #     - plan
+      - apply:
+          requires:
+            - plan
+      - setup_env:
+          requires:
+            - apply
+      - deploy_monitoring:
+          requires:
+            - setup_env
+      # - deploy_application:
+      #     requires:
+      #       - deploy_monitoring
+      - hold_destroy:
+          type: approval
+          requires:
+            - apply
+      - destroy:
+          requires:
+            - hold_destroy
