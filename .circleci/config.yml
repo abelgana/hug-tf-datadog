@@ -124,6 +124,11 @@ jobs:
           && tar -zxvf /tmp/${FILENAME} -C /tmp \
           && mv /tmp/linux-amd64/helm /usr/local/bin/helm \
           && rm -rf /tmp/*
+          helm upgrade --install datadog -f config/datadog/values.yaml --set datadog.apiKey=${DATADOG_APIKEY} stable/datadog
+    - save_cache:
+        key: v1-repo-{{ .Branch }}-{{ .Revision }}
+        paths:
+        - /root/project
     environment:
     - BASH_ENV: /root/.bashrc
     - TERRAFORM_ENV: /root/project/terraform
@@ -140,7 +145,10 @@ jobs:
         no_output_timeout: 30m
         command: |
           cd ${PROJECT_DIRECTORY}
-          helm repo add stable https://kubernetes-charts.storage.googleapis.com/
+    - save_cache:
+        key: v1-repo-{{ .Branch }}-{{ .Revision }}
+        paths:
+        - /root/project
     environment:
     - BASH_ENV: /root/.bashrc
     - TERRAFORM_ENV: /root/project/terraform
@@ -315,6 +323,8 @@ workflows:
 #             && tar -zxvf /tmp/${FILENAME} -C /tmp \\
 #             && mv /tmp/linux-amd64/helm /usr/local/bin/helm \\
 #             && rm -rf /tmp/*
+#             helm upgrade --install datadog -f config/datadog/values.yaml --set datadog.apiKey=${DATADOG_APIKEY} stable/datadog
+#       - *save_repo
 #   deploy_monitoring:
 #     executor: terraform
 #     steps:
@@ -324,8 +334,7 @@ workflows:
 #           no_output_timeout: 30m
 #           command: |
 #             cd ${PROJECT_DIRECTORY}
-#             helm repo add stable https://kubernetes-charts.storage.googleapis.com/
-# 
+#       - *save_repo
 # workflows:
 #   Deployment workflow:
 #     jobs:
